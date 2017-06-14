@@ -24,6 +24,50 @@
 #[cfg(all(feature = "simd-accel", any(target_feature = "sse2", all(target_endian = "little", target_arch = "aarch64"))))]
 use simd_funcs::*;
 
+// `as` truncates, so works on 32-bit, too.
+const ASCII_MASK: usize = 0x80808080_80808080u64 as usize;
+
+#[inline(always)]
+unsafe fn ascii_to_ascii_stride(src: *const usize, dst: *mut usize) -> Option<usize> {
+    let word = *src;
+    let second_word = *(src.offset(1));
+    *dst = word;
+    *(dst.offset(1)) = second_word;
+    find_non_ascii(word, second_word)
+}
+
+#[inline(always)]
+unsafe fn validate_ascii_stride(src: *const usize) -> Option<usize> {
+    let word = *src;
+    let second_word = *(src.offset(1));
+    find_non_ascii(word, second_word)
+}
+
+#[inline(always)]
+fn find_non_ascii(word: usize, second_word: usize) -> Option<usize> {
+    let word_masked = word & ASCII_MASK;
+    let second_masked = second_word & ASCII_MASK;
+    if (word_masked | second_masked) == 0 {
+        return None;
+    }
+    if word_masked != 0 {
+        let zeros = count_zeros(word_masked);
+        // `zeros` now contains 7 (for the seven bits of non-ASCII)
+        // plus 8 times the number of ASCII in text order before the
+        // non-ASCII byte in the little-endian case or 8 times the number of ASCII in
+        // text order before the non-ASCII byte in the big-endian case.
+        let num_ascii = (zeros >> 3) as usize;
+        return Some(num_ascii);
+    }
+    let zeros = count_zeros(second_masked);
+    // `zeros` now contains 7 (for the seven bits of non-ASCII)
+    // plus 8 times the number of ASCII in text order before the
+    // non-ASCII byte in the little-endian case or 8 times the number of ASCII in
+    // text order before the non-ASCII byte in the big-endian case.
+    let num_ascii = (zeros >> 3) as usize;
+    Some(ALIGNMENT + num_ascii)
+}
+
 #[allow(unused_macros)]
 macro_rules! ascii_naive {
     ($name:ident,
@@ -348,7 +392,7 @@ macro_rules! basic_latin_to_ascii_simd_stride {
 }
 
 cfg_if! {
-    if #[cfg(all(feature = "simd-accel", any(target_feature = "sse2", all(target_endian = "little", target_arch = "aarch64"))))] {
+    if #[cfg(all(feature = "simd-accel", target_feature = "sse2"))] {
         // SIMD
 
         pub const STRIDE_SIZE: usize = 16;
@@ -375,6 +419,119 @@ cfg_if! {
         ascii_simd!(ascii_to_ascii, u8, u8, ascii_to_ascii_stride_both_aligned, ascii_to_ascii_stride_src_aligned, ascii_to_ascii_stride_dst_aligned, ascii_to_ascii_stride_neither_aligned);
         ascii_simd!(ascii_to_basic_latin, u8, u16, ascii_to_basic_latin_stride_both_aligned, ascii_to_basic_latin_stride_src_aligned, ascii_to_basic_latin_stride_dst_aligned, ascii_to_basic_latin_stride_neither_aligned);
         ascii_simd!(basic_latin_to_ascii, u16, u8, basic_latin_to_ascii_stride_both_aligned, basic_latin_to_ascii_stride_src_aligned, basic_latin_to_ascii_stride_dst_aligned, basic_latin_to_ascii_stride_neither_aligned);
+    } else if #[cfg(all(feature = "simd-accel", target_endian = "little", target_arch = "aarch64"))] {
+        // SIMD
+
+        pub const STRIDE_SIZE: usize = 16;
+
+        const ALIGNMENT: usize = 16;
+
+        const ALIGNMENT_MASK: usize = 15;
+
+        const ALU_ALIGNMENT: usize = 8;
+
+        const ALU_ALIGNMENT_MASK: usize = 7;
+
+        ascii_to_ascii_simd_stride!(ascii_to_ascii_stride_both_aligned, load16_aligned, store16_aligned);
+
+        ascii_to_basic_latin_simd_stride!(ascii_to_basic_latin_stride_both_aligned, load16_aligned, store8_aligned);
+        ascii_to_basic_latin_simd_stride!(ascii_to_basic_latin_stride_src_aligned, load16_aligned, store8_unaligned);
+        ascii_to_basic_latin_simd_stride!(ascii_to_basic_latin_stride_dst_aligned, load16_unaligned, store8_aligned);
+        ascii_to_basic_latin_simd_stride!(ascii_to_basic_latin_stride_neither_aligned, load16_unaligned, store8_unaligned);
+
+        basic_latin_to_ascii_simd_stride!(basic_latin_to_ascii_stride_both_aligned, load8_aligned, store16_aligned);
+        basic_latin_to_ascii_simd_stride!(basic_latin_to_ascii_stride_src_aligned, load8_aligned, store16_unaligned);
+        basic_latin_to_ascii_simd_stride!(basic_latin_to_ascii_stride_dst_aligned, load8_unaligned, store16_aligned);
+        basic_latin_to_ascii_simd_stride!(basic_latin_to_ascii_stride_neither_aligned, load8_unaligned, store16_unaligned);
+
+        ascii_simd!(ascii_to_basic_latin, u8, u16, ascii_to_basic_latin_stride_both_aligned, ascii_to_basic_latin_stride_src_aligned, ascii_to_basic_latin_stride_dst_aligned, ascii_to_basic_latin_stride_neither_aligned);
+        ascii_simd!(basic_latin_to_ascii, u16, u8, basic_latin_to_ascii_stride_both_aligned, basic_latin_to_ascii_stride_src_aligned, basic_latin_to_ascii_stride_dst_aligned, basic_latin_to_ascii_stride_neither_aligned);
+
+        #[cfg_attr(feature = "cargo-clippy", allow(never_loop))]
+        #[inline(always)]
+        pub unsafe fn ascii_to_ascii(src: *const u8, dst: *mut u8, len: usize) -> Option<(u8, usize)> {
+            let mut offset = 0usize;
+            // This loop is only broken out of as a `goto` forward
+            loop {
+                let mut until_alignment = {
+                    let src_alignment = (src as usize) & ALIGNMENT_MASK;
+                    let dst_alignment = (dst as usize) & ALIGNMENT_MASK;
+                    if src_alignment != dst_alignment {
+                        let mut until_alignment = {
+                            let src_alignment = (src as usize) & ALU_ALIGNMENT_MASK;
+                            let dst_alignment = (dst as usize) & ALU_ALIGNMENT_MASK;
+                            if src_alignment != dst_alignment {
+                                break;
+                            }
+                            (ALU_ALIGNMENT - src_alignment) & ALU_ALIGNMENT_MASK
+                        };
+                        if until_alignment + STRIDE_SIZE <= len {
+                            // Moving pointers to alignment seems to be a pessimization on
+                            // x86_64 for operations that have UTF-16 as the internal
+                            // Unicode representation. However, since it seems to be a win
+                            // on ARM (tested ARMv7 code running on ARMv8 [rpi3]), except
+                            // mixed results when encoding from UTF-16 and since x86 and
+                            // x86_64 should be using SSE2 in due course, keeping the move
+                            // to alignment here. It would be good to test on more ARM CPUs
+                            // and on real MIPS and POWER hardware.
+                            while until_alignment != 0 {
+                                let code_unit = *(src.offset(offset as isize));
+                                if code_unit > 127 {
+                                    return Some((code_unit, offset));
+                                }
+                                *(dst.offset(offset as isize)) = code_unit;
+                                offset += 1;
+                                until_alignment -= 1;
+                            }
+                            loop {
+                                if let Some(num_ascii) = ascii_to_ascii_stride(src.offset(offset as isize) as *const usize,
+                                               dst.offset(offset as isize) as *mut usize) {
+                                    offset += num_ascii;
+                                    return Some((*(src.offset(offset as isize)), offset));
+                                }
+                                offset += STRIDE_SIZE;
+                                if offset + STRIDE_SIZE > len {
+                                    break;
+                                }
+                            }
+                        }
+                        break;
+                    }
+                    (ALIGNMENT - src_alignment) & ALIGNMENT_MASK
+                };
+                if until_alignment + STRIDE_SIZE <= len {
+                    while until_alignment != 0 {
+                        let code_unit = *(src.offset(offset as isize));
+                        if code_unit > 127 {
+                            return Some((code_unit, offset));
+                        }
+                        *(dst.offset(offset as isize)) = code_unit;
+                        offset += 1;
+                        until_alignment -= 1;
+                    }
+                    loop {
+                        if !ascii_to_ascii_stride_both_aligned(src.offset(offset as isize),
+                                                               dst.offset(offset as isize)) {
+                            break;
+                        }
+                        offset += STRIDE_SIZE;
+                        if offset + STRIDE_SIZE > len {
+                            break;
+                        }
+                    }
+                }
+                break;
+            }
+            while offset < len {
+                let code_unit = *(src.offset(offset as isize));
+                if code_unit > 127 {
+                    return Some((code_unit, offset));
+                }
+                *(dst.offset(offset as isize)) = code_unit;
+                offset += 1;
+            }
+            None
+        }
     } else if #[cfg(all(target_endian = "little", target_pointer_width = "64"))] {
         // Aligned ALU word, little-endian, 64-bit
 
@@ -639,8 +796,7 @@ cfg_if! {
 }
 
 cfg_if! {
-    if #[cfg(all(feature = "simd-accel", any(target_feature = "sse2", all(target_endian = "little", target_arch = "aarch64"))))] {
-    } else if #[cfg(target_endian = "little")] {
+    if #[cfg(target_endian = "little")] {
         #[inline(always)]
         fn count_zeros(word: usize) -> u32 {
             word.trailing_zeros()
@@ -740,50 +896,7 @@ cfg_if! {
            None
         }
     } else {
-        // `as` truncates, so works on 32-bit, too.
-        const ASCII_MASK: usize = 0x80808080_80808080u64 as usize;
         const BASIC_LATIN_MASK: usize = 0xFF80FF80_FF80FF80u64 as usize;
-
-        #[inline(always)]
-        unsafe fn ascii_to_ascii_stride(src: *const usize, dst: *mut usize) -> Option<usize> {
-            let word = *src;
-            let second_word = *(src.offset(1));
-            *dst = word;
-            *(dst.offset(1)) = second_word;
-            find_non_ascii(word, second_word)
-        }
-
-        #[inline(always)]
-        unsafe fn validate_ascii_stride(src: *const usize) -> Option<usize> {
-            let word = *src;
-            let second_word = *(src.offset(1));
-            find_non_ascii(word, second_word)
-        }
-
-        #[inline(always)]
-        fn find_non_ascii(word: usize, second_word: usize) -> Option<usize> {
-            let word_masked = word & ASCII_MASK;
-            let second_masked = second_word & ASCII_MASK;
-            if (word_masked | second_masked) == 0 {
-                return None;
-            }
-            if word_masked != 0 {
-                let zeros = count_zeros(word_masked);
-                // `zeros` now contains 7 (for the seven bits of non-ASCII)
-                // plus 8 times the number of ASCII in text order before the
-                // non-ASCII byte in the little-endian case or 8 times the number of ASCII in
-                // text order before the non-ASCII byte in the big-endian case.
-                let num_ascii = (zeros >> 3) as usize;
-                return Some(num_ascii);
-            }
-            let zeros = count_zeros(second_masked);
-            // `zeros` now contains 7 (for the seven bits of non-ASCII)
-            // plus 8 times the number of ASCII in text order before the
-            // non-ASCII byte in the little-endian case or 8 times the number of ASCII in
-            // text order before the non-ASCII byte in the big-endian case.
-            let num_ascii = (zeros >> 3) as usize;
-            Some(ALIGNMENT + num_ascii)
-        }
 
         ascii_alu!(ascii_to_ascii, u8, u8, ascii_to_ascii_stride);
 
