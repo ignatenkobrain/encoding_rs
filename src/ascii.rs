@@ -389,7 +389,7 @@ cfg_if! {
             let word = *src;
             let second_word = *(src.offset(1));
             // Check if the words contains non-ASCII
-            if (word & ASCII_MASK) | (second_word & ASCII_MASK) != 0 {
+            if ((word | second_word) & ASCII_MASK) != 0 {
                 return false;
             }
             let first = ((0x00000000_FF000000usize & word) << 24) |
@@ -421,7 +421,7 @@ cfg_if! {
             let second = *(src.offset(1));
             let third = *(src.offset(2));
             let fourth = *(src.offset(3));
-            if (first & BASIC_LATIN_MASK) | (second & BASIC_LATIN_MASK) | (third & BASIC_LATIN_MASK) | (fourth & BASIC_LATIN_MASK) != 0 {
+            if (((first | second) | (third | fourth)) & BASIC_LATIN_MASK) != 0 {
                 return false;
             }
             let word = ((0x00FF0000_00000000usize & second) << 8) |
@@ -461,7 +461,7 @@ cfg_if! {
             let word = *src;
             let second_word = *(src.offset(1));
             // Check if the words contains non-ASCII
-            if (word & ASCII_MASK) | (second_word & ASCII_MASK) != 0 {
+            if ((word | second_word) & ASCII_MASK) != 0 {
                 return false;
             }
             let first = ((0x0000FF00usize & word) << 8) |
@@ -485,7 +485,7 @@ cfg_if! {
             let second = *(src.offset(1));
             let third = *(src.offset(2));
             let fourth = *(src.offset(3));
-            if (first & BASIC_LATIN_MASK) | (second & BASIC_LATIN_MASK) | (third & BASIC_LATIN_MASK) | (fourth & BASIC_LATIN_MASK) != 0 {
+            if (((first | second) | (third | fourth)) & BASIC_LATIN_MASK) != 0 {
                 return false;
             }
             let word = ((0x00FF0000usize & second) << 8) |
@@ -517,7 +517,7 @@ cfg_if! {
             let word = *src;
             let second_word = *(src.offset(1));
             // Check if the words contains non-ASCII
-            if (word & ASCII_MASK) | (second_word & ASCII_MASK) != 0 {
+            if ((word | second_word) & ASCII_MASK) != 0 {
                 return false;
             }
             let first = ((0xFF000000_00000000usize & word) >> 8) |
@@ -549,7 +549,7 @@ cfg_if! {
             let second = *(src.offset(1));
             let third = *(src.offset(2));
             let fourth = *(src.offset(3));
-            if (first & BASIC_LATIN_MASK) | (second & BASIC_LATIN_MASK) | (third & BASIC_LATIN_MASK) | (fourth & BASIC_LATIN_MASK) != 0 {
+            if (((first | second) | (third | fourth)) & BASIC_LATIN_MASK) != 0 {
                 return false;
             }
             let word = ((0x00FF0000_00000000usize & first) << 8) |
@@ -589,7 +589,7 @@ cfg_if! {
             let word = *src;
             let second_word = *(src.offset(1));
             // Check if the words contains non-ASCII
-            if (word & ASCII_MASK) | (second_word & ASCII_MASK) != 0 {
+            if ((word | second_word) & ASCII_MASK) != 0 {
                 return false;
             }
             let first = ((0xFF000000usize & word) >> 8) |
@@ -613,7 +613,7 @@ cfg_if! {
             let second = *(src.offset(1));
             let third = *(src.offset(2));
             let fourth = *(src.offset(3));
-            if (first & BASIC_LATIN_MASK) | (second & BASIC_LATIN_MASK) | (third & BASIC_LATIN_MASK) | (fourth & BASIC_LATIN_MASK) != 0 {
+            if (((first | second) | (third | fourth)) & BASIC_LATIN_MASK) != 0 {
                 return false;
             }
             let word = ((0x00FF0000usize & first) << 8) |
